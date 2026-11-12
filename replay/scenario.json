@@ -1,0 +1,6 @@
+[
+ {"status":"detected","message":"SIMULATED · two HTTP 500 responses opened an incident"},
+ {"status":"repairing","message":"SIMULATED · agent proposed an optional-coupon null guard"},
+ {"status":"verifying","message":"SIMULATED · independent regression suite and HTTP contract passed"},
+ {"status":"awaiting_approval","message":"SIMULATED · release is waiting for human approval"}
+]

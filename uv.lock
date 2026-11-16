@@ -5393,7 +5393,7 @@ wheels = [
 ]
 
 [[package]]
-name = "self-healing-demo"
+name = "self-healing-app"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [

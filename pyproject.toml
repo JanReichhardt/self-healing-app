@@ -1,5 +1,5 @@
 [project]
-name = "self-healing-demo"
+name = "self-healing-app"
 version = "0.1.0"
 requires-python = ">=3.12,<3.14"
 dependencies = ["fastapi==0.162.5", "uvicorn==0.38.0", "httpx==0.28.1"]

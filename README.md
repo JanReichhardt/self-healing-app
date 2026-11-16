@@ -1,14 +1,14 @@
 # Self-healing checkout lab
 
-A runnable, local 25-minute demonstration for **macOS Apple Silicon, Java 21 and Python 3.12**. Quarkus checkout → synthetic monitor → FastAPI incident controller → OpenHands coding agent → independent verification → human approval → recovered checkout. Everything binds to loopback. No Docker, Node, cloud deployment, or database required.
+Demonstration for **macOS Apple Silicon, Java 21 and Python 3.12**. Quarkus checkout → synthetic monitor → FastAPI incident controller → OpenHands coding agent → independent verification → human approval → recovered checkout. Everything binds to loopback. No Docker, Node, cloud deployment, or database required.
 
 ## Start in three steps
 
-Prerequisites: Git, Homebrew, Maven, uv and a Java 21 JDK. On an Apple Silicon Mac:
+Prerequisites: Git, Homebrew, Maven, uv and a Java 25 JDK. On an Apple Silicon Mac:
 
 ```bash
-brew install openjdk@21 maven uv
-export JAVA_HOME="$(brew --prefix openjdk@21)/libexec/openjdk.jdk/Contents/Home"
+brew install openjdk@25 maven uv
+export JAVA_HOME="$(brew --prefix openjdk@25)/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$PATH"
 ```
 

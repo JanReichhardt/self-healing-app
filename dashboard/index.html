@@ -1,19 +1,268 @@
-<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>REPAIR / Self-healing checkout</title>
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta content="width=device-width,initial-scale=1" name="viewport">
+<title>Self-Healing Checkout</title>
 <style>
-:root{color-scheme:dark;font:15px system-ui;background:#0b1019;color:#e8edf6}*{box-sizing:border-box}body{max-width:1250px;margin:auto;padding:38px}header{display:flex;justify-content:space-between;align-items:center}.eyebrow{font:12px monospace;letter-spacing:3px;color:#66e3c4}h1{font-size:38px;margin:12px 0}p{color:#a8b5c9;line-height:1.6}#mode{border:1px solid #526179;padding:10px 16px;border-radius:30px}main{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{background:#121c2b;border:1px solid #29374d;border-radius:16px;padding:24px}h2{font-size:17px}#status{font-size:30px;color:#66e3c4}button{padding:12px 16px;border:0;border-radius:8px;background:#66e3c4;color:#09221b;font-weight:700;margin:5px 6px 5px 0;cursor:pointer}button.secondary{background:#2a3950;color:#e8edf6}button:disabled{opacity:.35;cursor:default}pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.6 ui-monospace,monospace;color:#bdd3e9;max-height:350px;overflow:auto}.wide{grid-column:1/-1}#timeline{max-height:340px;overflow:auto}article{padding:10px 0;border-bottom:1px solid #29374d}time{color:#7b8da7;font:12px monospace;margin-right:14px}.small{font-size:12px;color:#a8b5c9}#error{color:#ffb4a3;min-height:24px}a{color:#66e3c4}.steps{display:flex;gap:12px;flex-wrap:wrap;margin:24px 0;color:#a8b5c9}.step{padding:10px;border-bottom:2px solid #29374d}.current{color:#66e3c4;border-color:#66e3c4}@media(max-width:800px){main{grid-template-columns:1fr}body{padding:20px}header{display:block}h1{font-size:29px}}
+    :root {
+        color-scheme: dark;
+        font: 15px system-ui;
+        background: #0b1019;
+        color: #e8edf6
+    }
+
+    * {
+        box-sizing: border-box
+    }
+
+    body {
+        max-width: 1250px;
+        margin: auto;
+        padding: 38px
+    }
+
+    header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center
+    }
+
+    .eyebrow {
+        font: 12px monospace;
+        letter-spacing: 3px;
+        color: #66e3c4
+    }
+
+    h1 {
+        font-size: 38px;
+        margin: 12px 0
+    }
+
+    p {
+        color: #a8b5c9;
+        line-height: 1.6
+    }
+
+    #mode {
+        border: 1px solid #526179;
+        padding: 10px 16px;
+        border-radius: 30px
+    }
+
+    main {
+        display: grid;
+        grid-template-columns:1fr 1fr;
+        gap: 20px
+    }
+
+    .card {
+        background: #121c2b;
+        border: 1px solid #29374d;
+        border-radius: 16px;
+        padding: 24px
+    }
+
+    h2 {
+        font-size: 17px
+    }
+
+    #status {
+        font-size: 30px;
+        color: #66e3c4
+    }
+
+    button {
+        padding: 12px 16px;
+        border: 0;
+        border-radius: 8px;
+        background: #66e3c4;
+        color: #09221b;
+        font-weight: 700;
+        margin: 5px 6px 5px 0;
+        cursor: pointer
+    }
+
+    button.secondary {
+        background: #2a3950;
+        color: #e8edf6
+    }
+
+    button:disabled {
+        opacity: .35;
+        cursor: default
+    }
+
+    pre {
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        font: 12px/1.6 ui-monospace, monospace;
+        color: #bdd3e9;
+        max-height: 350px;
+        overflow: auto
+    }
+
+    .wide {
+        grid-column: 1/-1
+    }
+
+    #timeline {
+        max-height: 340px;
+        overflow: auto
+    }
+
+    article {
+        padding: 10px 0;
+        border-bottom: 1px solid #29374d
+    }
+
+    time {
+        color: #7b8da7;
+        font: 12px monospace;
+        margin-right: 14px
+    }
+
+    .small {
+        font-size: 12px;
+        color: #a8b5c9
+    }
+
+    #error {
+        color: #ffb4a3;
+        min-height: 24px
+    }
+
+    a {
+        color: #66e3c4
+    }
+
+    .steps {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin: 24px 0;
+        color: #a8b5c9
+    }
+
+    .step {
+        padding: 10px;
+        border-bottom: 2px solid #29374d
+    }
+
+    .current {
+        color: #66e3c4;
+        border-color: #66e3c4
+    }
+
+    @media (max-width: 800px) {
+        main {
+            grid-template-columns:1fr
+        }
+
+        body {
+            padding: 20px
+        }
+
+        header {
+            display: block
+        }
+
+        h1 {
+            font-size: 29px
+        }
+    }
 </style>
-<header><div><div class="eyebrow">ENGINEERING LAB / 01</div><h1>Software that repairs itself.</h1><p>A checkout incident. A proposed fix. Evidence before approval.</p></div><span id="mode">Connecting…</span></header>
-<div class="steps" id="steps"></div><main>
-<section class="card"><h2>Service control</h2><div id="status">Connecting</div><p id="probe">Waiting for first synthetic checkout…</p><button id="inject">Inject null coupon</button><button id="reset" class="secondary">Reset demo</button><p class="small">Injection changes synthetic traffic. The source contains the reproducible bug from the start.</p><div id="error" role="alert"></div><a href="/api/metrics" target="_blank">Prometheus metrics ↗</a></section>
-<section class="card"><h2>Deployment approval</h2><p>Only a clean rebuild that passes independent regression and HTTP tests can reach this gate.</p><pre id="digest">No candidate yet.</pre><button id="approve" disabled>Approve tested release</button><button id="reject" class="secondary" disabled>Reject</button><p class="small">Approval is bound to the incident and artifact SHA-256.</p></section>
-<section class="card"><h2>Proposed source change</h2><pre id="patch">The proposed patch will appear here.</pre></section>
-<section class="card"><h2>Live event stream <span id="connection" class="small">• connecting</span></h2><div id="timeline" aria-live="polite"></div></section>
-</main><script>
-let state={},token='';const $=id=>document.getElementById(id);
-const phases=['healthy','detected','repairing','verifying','awaiting_approval','resolved'];
-function render(s){state=s;$('mode').textContent=s.mode==='replay'?'REPLAY · SIMULATED':s.mode==='deterministic'?'LIVE · DETERMINISTIC REPAIR':'LIVE · OPENHANDS';$('status').textContent=s.status.replaceAll('_',' ');$('patch').textContent=s.patch||'The proposed patch will appear here.';$('digest').textContent=s.digest||'No candidate yet.';const ready=s.status==='awaiting_approval';$('approve').disabled=$('reject').disabled=!ready;$('inject').disabled=s.status!=='healthy'||s.armed;$('reset').disabled=!['healthy','resolved','rejected','failed'].includes(s.status);$('steps').replaceChildren(...phases.map(x=>{let el=document.createElement('span');el.className='step'+(x===s.status?' current':'');el.textContent=x.replaceAll('_',' ');return el}));if(s.last_probe)$('probe').textContent=`Synthetic checkout: ${s.last_probe.ok?'PASS':'FAIL'} · HTTP ${s.last_probe.code}`;}
-async function refresh(){render(await (await fetch('/api/state')).json())}
-async function act(name){$('error').textContent='';try{const r=await fetch('/api/'+name,{method:'POST',headers:{'content-type':'application/json','x-demo-token':token},body:name==='approve'?JSON.stringify({incident:state.incident,digest:state.digest}):undefined});if(!r.ok)throw Error(await r.text());render(await r.json())}catch(e){$('error').textContent=e.message}}
-for(const name of ['inject','reset','approve','reject'])$(name).onclick=()=>act(name);
-(async()=>{token=(await(await fetch('/api/session')).json()).token;await refresh();const events=new EventSource('/api/events');events.onopen=()=>$('connection').textContent='• connected';events.onerror=()=>$('connection').textContent='• reconnecting';events.onmessage=e=>{const data=JSON.parse(e.data);const row=document.createElement('article'),time=document.createElement('time'),label=document.createElement('span');time.textContent=new Date(data.time*1000).toLocaleTimeString();label.textContent=data.message;row.append(time,label);$('timeline').prepend(row);while($('timeline').children.length>100)$('timeline').lastChild.remove();refresh().catch(()=>{})}})();
-</script></html>
+<header>
+    <div>
+        <div class="eyebrow">ENGINEERING LAB</div>
+        <h1>Software that repairs itself.</h1>
+        <p>A checkout incident. A proposed fix. Evidence before approval.</p></div>
+    <span id="mode">Connecting…</span></header>
+<div class="steps" id="steps"></div>
+<main>
+    <section class="card"><h2>Service control</h2>
+        <div id="status">Connecting</div>
+        <p id="probe">Waiting for first synthetic checkout…</p>
+        <button id="inject">Inject null coupon</button>
+        <button class="secondary" id="reset">Reset demo</button>
+        <p class="small">Injection changes synthetic traffic. The source contains the reproducible bug from the
+            start.</p>
+        <div id="error" role="alert"></div>
+        <a href="/api/metrics" target="_blank">Prometheus metrics ↗</a></section>
+    <section class="card"><h2>Deployment approval</h2>
+        <p>Only a clean rebuild that passes independent regression and HTTP tests can reach this gate.</p>
+        <pre id="digest">No candidate yet.</pre>
+        <button disabled id="approve">Approve tested release</button>
+        <button class="secondary" disabled id="reject">Reject</button>
+        <p class="small">Approval is bound to the incident and artifact SHA-256.</p></section>
+    <section class="card"><h2>Proposed source change</h2>
+        <pre id="patch">The proposed patch will appear here.</pre>
+    </section>
+    <section class="card"><h2>Live event stream <span class="small" id="connection">• connecting</span></h2>
+        <div aria-live="polite" id="timeline"></div>
+    </section>
+</main>
+<script>
+    let state = {}, token = '';
+    const $ = id => document.getElementById(id);
+    const phases = ['healthy', 'detected', 'repairing', 'verifying', 'awaiting_approval', 'resolved'];
+
+    function render(s) {
+        state = s;
+        $('mode').textContent = s.mode === 'replay' ? 'REPLAY · SIMULATED' : s.mode === 'deterministic' ? 'LIVE · DETERMINISTIC REPAIR' : 'LIVE · OPENHANDS';
+        $('status').textContent = s.status.replaceAll('_', ' ');
+        $('patch').textContent = s.patch || 'The proposed patch will appear here.';
+        $('digest').textContent = s.digest || 'No candidate yet.';
+        const ready = s.status === 'awaiting_approval';
+        $('approve').disabled = $('reject').disabled = !ready;
+        $('inject').disabled = s.status !== 'healthy' || s.armed;
+        $('reset').disabled = !['healthy', 'resolved', 'rejected', 'failed'].includes(s.status);
+        $('steps').replaceChildren(...phases.map(x => {
+            let el = document.createElement('span');
+            el.className = 'step' + (x === s.status ? ' current' : '');
+            el.textContent = x.replaceAll('_', ' ');
+            return el
+        }));
+        if (s.last_probe) $('probe').textContent = `Synthetic checkout: ${s.last_probe.ok ? 'PASS' : 'FAIL'} · HTTP ${s.last_probe.code}`;
+    }
+
+    async function refresh() {
+        render(await (await fetch('/api/state')).json())
+    }
+
+    async function act(name) {
+        $('error').textContent = '';
+        try {
+            const r = await fetch('/api/' + name, {
+                method: 'POST',
+                headers: {'content-type': 'application/json', 'x-demo-token': token},
+                body: name === 'approve' ? JSON.stringify({incident: state.incident, digest: state.digest}) : undefined
+            });
+            if (!r.ok) throw Error(await r.text());
+            render(await r.json())
+        } catch (e) {
+            $('error').textContent = e.message
+        }
+    }
+
+    for (const name of ['inject', 'reset', 'approve', 'reject']) $(name).onclick = () => act(name);
+    (async () => {
+        token = (await (await fetch('/api/session')).json()).token;
+        await refresh();
+        const events = new EventSource('/api/events');
+        events.onopen = () => $('connection').textContent = '• connected';
+        events.onerror = () => $('connection').textContent = '• reconnecting';
+        events.onmessage = e => {
+            const data = JSON.parse(e.data);
+            const row = document.createElement('article'), time = document.createElement('time'),
+                label = document.createElement('span');
+            time.textContent = new Date(data.time * 1000).toLocaleTimeString();
+            label.textContent = data.message;
+            row.append(time, label);
+            $('timeline').prepend(row);
+            while ($('timeline').children.length > 100) $('timeline').lastChild.remove();
+            refresh().catch(() => {
+            })
+        }
+    })();
+</script>
+</html>

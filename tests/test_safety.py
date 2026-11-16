@@ -72,8 +72,6 @@ def test_probe_event_accepts_measurement_timestamp(tmp_path):
 def test_openhands_adapter_initializes_without_model_call(tmp_path, monkeypatch):
     sdk=pytest.importorskip('openhands.sdk')
     from unittest.mock import patch
-    monkeypatch.setenv('LLM_MODEL','openai/gpt-4.1')
-    monkeypatch.setenv('LLM_API_KEY','offline-validation-only')
     workspace=tmp_path/'workspace'; workspace.mkdir()
     with patch.object(sdk.LocalConversation,'run') as run:
         repair(workspace,'openhands')

@@ -51,13 +51,14 @@ Stop the server with Ctrl-C. Install the pinned optional extra and configure you
 ```bash
 uv sync --frozen --python 3.12 --extra dev --extra agent
 export AGENT_MODE=openhands
-export LLM_MODEL='your-provider/model-id'
-read -s LLM_API_KEY
-export LLM_API_KEY
+# uses your Claude subscription: run `claude login` once (or set CLAUDE_CODE_OAUTH_TOKEN); needs Node/npx
+export ACP_MODEL=sonnet   # optional
 ./scripts/start.sh
 ```
 
-Select a model identifier supported by OpenHands/LiteLLM and your account. Credentials are read only from the environment; never put them into Git. The adapter uses the OpenHands SDK's `LLM`, `Agent`, `LocalConversation`, and `FileEditorTool`, with at most 12 iterations and a 180-second process timeout. Only file editing is exposed; no terminal tool. It edits a detached Git worktree, and the controller imports only the allowlisted Java source file into a **different** clean verification worktree. It never executes build configuration or tests supplied by the agent. Agent logs are local under `.state/agent-<incident>.log`.
+The adapter uses the OpenHands SDK's `ACPAgent` (Claude Code via `claude-agent-acp`) in a `LocalConversation`, with a 180-second process timeout. Authentication comes from your Claude subscription login; never put tokens into Git. Claude Code brings its own tools (including shell), so the file-only restriction no longer applies at the agent level; safety rests on the detached worktree and the allowlisted-file import below.
+
+The agent receives the newest checkout exception from the Quarkus log. After verification the engine pushes `self-heal/<incident>`, opens a PR (CI: `.github/workflows/ci.yml`); merging it deploys the fix. Set `PUBLISH_FIX=0` to skip the push/PR and approve in the dashboard instead. It edits a detached Git worktree, and the controller imports only the allowlisted Java source file into a **different** clean verification worktree. It never executes build configuration or tests supplied by the agent. Agent logs are local under `.state/agent-<incident>.log`.
 
 An actual model run needs your credentials and incurs provider charges. The deterministic run validates the same downstream repair pipeline. Do not describe it as evidence of model quality.
 

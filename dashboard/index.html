@@ -182,6 +182,8 @@
     <section class="card"><h2>Service control</h2>
         <div id="status">Connecting</div>
         <p id="probe">Waiting for first synthetic checkout…</p>
+        <p id="live" style="font-weight:600"></p>
+        <p id="pr"></p>
         <button id="inject">Inject null coupon</button>
         <button class="secondary" id="reset">Reset demo</button>
         <p class="small">Injection changes synthetic traffic. The source contains the reproducible bug from the
@@ -197,6 +199,9 @@
     <section class="card"><h2>Proposed source change</h2>
         <pre id="patch">The proposed patch will appear here.</pre>
     </section>
+    <section class="card"><h2>Quarkus service log</h2>
+        <pre id="log" style="max-height:18rem;overflow:auto">Waiting for log output…</pre>
+    </section>
     <section class="card"><h2>Live event stream <span class="small" id="connection">• connecting</span></h2>
         <div aria-live="polite" id="timeline"></div>
     </section>
@@ -211,6 +216,12 @@
         $('mode').textContent = s.mode === 'replay' ? 'REPLAY · SIMULATED' : s.mode === 'deterministic' ? 'LIVE · DETERMINISTIC REPAIR' : 'LIVE · OPENHANDS';
         $('status').textContent = s.status.replaceAll('_', ' ');
         $('patch').textContent = s.patch || 'The proposed patch will appear here.';
+        $('live').textContent = s.live ? (s.status === 'failed' ? '✗ ' : '✓ ') + s.live : '';
+        if (s.pr) {
+            const a = document.createElement('a');
+            a.href = s.pr; a.target = '_blank'; a.rel = 'noopener'; a.textContent = s.pr;
+            $('pr').replaceChildren('Pull request: ', a, ` · CI: ${s.ci || '…'} · merging it deploys the fix`);
+        } else $('pr').textContent = '';
         $('digest').textContent = s.digest || 'No candidate yet.';
         const ready = s.status === 'awaiting_approval';
         $('approve').disabled = $('reject').disabled = !ready;
@@ -231,12 +242,17 @@
 
     async function act(name) {
         $('error').textContent = '';
+        const send = () => fetch('/api/' + name, {
+            method: 'POST',
+            headers: {'content-type': 'application/json', 'x-demo-token': token},
+            body: name === 'approve' ? JSON.stringify({incident: state.incident, digest: state.digest}) : undefined
+        });
         try {
-            const r = await fetch('/api/' + name, {
-                method: 'POST',
-                headers: {'content-type': 'application/json', 'x-demo-token': token},
-                body: name === 'approve' ? JSON.stringify({incident: state.incident, digest: state.digest}) : undefined
-            });
+            let r = await send();
+            if (r.status === 403) { // the server restarted and issued a new session token
+                token = (await (await fetch('/api/session', {cache: 'no-store'})).json()).token;
+                r = await send();
+            }
             if (!r.ok) throw Error(await r.text());
             render(await r.json())
         } catch (e) {
@@ -246,13 +262,21 @@
 
     for (const name of ['inject', 'reset', 'approve', 'reject']) $(name).onclick = () => act(name);
     (async () => {
-        token = (await (await fetch('/api/session')).json()).token;
+        token = (await (await fetch('/api/session', {cache: 'no-store'})).json()).token;
         await refresh();
         const events = new EventSource('/api/events');
         events.onopen = () => $('connection').textContent = '• connected';
         events.onerror = () => $('connection').textContent = '• reconnecting';
         events.onmessage = e => {
             const data = JSON.parse(e.data);
+            if (data.kind === 'log') {
+                const log = $('log'), end = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+                if (log.dataset.live !== '1') { log.textContent = ''; log.dataset.live = '1'; }
+                log.append(data.message + '\n');
+                while (log.textContent.length > 60000) log.firstChild.remove();
+                if (end) log.scrollTop = log.scrollHeight;
+                return;
+            }
             const row = document.createElement('article'), time = document.createElement('time'),
                 label = document.createElement('span');
             time.textContent = new Date(data.time * 1000).toLocaleTimeString();

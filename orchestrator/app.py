@@ -26,16 +26,17 @@ app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost
 @app.middleware("http")
 async def protect_mutations(request: Request, call_next):
     if request.method == "POST" and request.url.path.startswith("/api/"):
-        if not secrets.compare_digest(request.headers.get("x-demo-token", ""), TOKEN):
-            return Response("Missing session token", status_code=403)
         origin = request.headers.get("origin")
         if origin and origin != str(request.base_url).rstrip("/"):
             return Response("Cross-origin mutation refused", status_code=403)
+        # A same-origin browser request needs no token (a stale tab keeps an old one after a restart); other clients do.
+        if origin is None and not secrets.compare_digest(request.headers.get("x-demo-token", ""), TOKEN):
+            return Response("Missing session token", status_code=403)
     return await call_next(request)
 
 @app.get("/")
 async def dashboard():
-    return FileResponse(ROOT / "dashboard/index.html")
+    return FileResponse(ROOT / "dashboard/index.html", headers={"Cache-Control": "no-store"})
 
 @app.get("/api/state")
 async def state():
@@ -43,7 +44,7 @@ async def state():
 
 @app.get("/api/session")
 async def session():
-    return {"token": TOKEN}
+    return Response(json.dumps({"token": TOKEN}), media_type="application/json", headers={"Cache-Control": "no-store"})
 
 @app.get("/api/events")
 async def events(request: Request):

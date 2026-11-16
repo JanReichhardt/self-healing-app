@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ import time
 import uuid
 
 import httpx
-from .agent import SOURCE
+from .agent import BUG, FIX, SOURCE
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -49,11 +50,15 @@ class Engine:
         self.baseline = None
         self.candidate = None
         self.procs = []
+        self.logs = {}
         self.tasks = set()
         self.lock = asyncio.Lock()
         self.armed = False
         self.failures = 0
         self.last_probe = None
+        self.live = None
+        self.pr = self.ci = None
+        self.merged = False
 
     def emit(self, kind, message, **data):
         event = dict(id=len(self.events) + 1, time=time.time(), kind=kind,
@@ -71,7 +76,7 @@ class Engine:
     def snapshot(self):
         return dict(status=self.status, mode=self.mode, incident=self.incident,
                     patch=self.patch, digest=self.digest, armed=self.armed,
-                    last_probe=self.last_probe, event_count=len(self.events))
+                    last_probe=self.last_probe, live=self.live, pr=self.pr, ci=self.ci, event_count=len(self.events))
 
     def spawn(self, coro):
         task = asyncio.create_task(coro)
@@ -107,7 +112,10 @@ class Engine:
                 pass
 
     async def git_text(self, *args, cwd=None):
-        proc = await asyncio.create_subprocess_exec("git", *args, cwd=cwd or self.repo,
+        return await self.text("git", *args, cwd=cwd or self.repo)
+
+    async def text(self, *args, cwd):
+        proc = await asyncio.create_subprocess_exec(*args, cwd=cwd,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         out, err = await proc.communicate()
         if proc.returncode:
@@ -132,6 +140,8 @@ class Engine:
             logfile.close()
         self.procs.append(proc)
         url = f"http://127.0.0.1:{port}"
+        self.logs[url] = self.state / f"java-{port}.log"
+        self.spawn(self.follow(self.logs[url], port))
         async with httpx.AsyncClient(timeout=2) as client:
             for _ in range(100):
                 if proc.returncode is not None:
@@ -144,6 +154,27 @@ class Engine:
                 await asyncio.sleep(.2)
         raise RuntimeError("Java readiness timeout")
 
+    async def follow(self, path, port):
+        """Stream a Quarkus log file to the dashboard, one event per line."""
+        with path.open(errors="replace") as f:
+            while True:
+                pos = f.tell()
+                line = f.readline()
+                if line.endswith("\n"):
+                    self.emit("log", line.rstrip()[:500], port=port)
+                else:
+                    f.seek(pos)  # partial line: re-read once complete
+                    await asyncio.sleep(.3)
+
+    def exception_excerpt(self):
+        """The newest ERROR block (with stack trace) the active Quarkus service logged for checkout."""
+        lines = self.logs[self.active].read_text(errors="replace").splitlines()
+        errors = [i for i, l in enumerate(lines) if " ERROR " in l]
+        excerpt = "\n".join(lines[errors[-1]:errors[-1] + 30]) if errors else ""
+        if "CheckoutResource" not in excerpt:
+            raise ValueError("No checkout exception found in the Quarkus log; nothing to repair")
+        return excerpt
+
     async def start(self):
         if self.mode == "replay":
             self.transition("healthy", "Replay ready: simulated events, no Java or agent execution")
@@ -154,6 +185,9 @@ class Engine:
             self.repo.mkdir()
             import shutil
             shutil.copytree(self.root / "service", self.repo / "service", ignore=shutil.ignore_patterns("target"))
+            # The working tree may sit on a fix branch; the demo baseline must always carry the bug.
+            src = self.repo / SOURCE
+            src.write_text(src.read_text().replace(FIX, BUG))
             await self.command(["git", "init", "-b", "demo"], cwd=self.repo)
             await self.command(["git", "add", "."], cwd=self.repo)
             await self.command(["git", "-c", "user.name=Demo", "-c", "user.email=demo@localhost", "commit", "-m", "Reproducible null-coupon baseline"], cwd=self.repo)
@@ -213,11 +247,15 @@ class Engine:
 
     async def repair(self):
         try:
+            excerpt = self.exception_excerpt()
+            (self.state / f"exception-{self.incident}.log").write_text(excerpt)
+            self.emit("diagnosis", "Agent receives the Quarkus exception from the service log", excerpt=excerpt)
             self.transition("repairing", f"Creating isolated Git worktree; adapter={self.mode}")
             self.agent_tree = self.state / ("agent-" + self.incident)
             self.verify_tree = self.state / ("verify-" + self.incident)
             await self.command(["git", "worktree", "add", "--detach", self.agent_tree, self.base], cwd=self.repo)
-            await self.command([sys.executable, "-m", "orchestrator.agent", self.agent_tree, self.mode], timeout=180,
+            await self.command([sys.executable, "-m", "orchestrator.agent", self.agent_tree, self.mode,
+                                self.state / f"exception-{self.incident}.log"], timeout=180,
                                logfile=f"agent-{self.incident}.log")
             # Extract only the approved regular source file, never run the agent's build/test files.
             source = self.agent_tree / SOURCE
@@ -239,6 +277,10 @@ class Engine:
             self.digest = digest_tree(self.release)
             self.transition("awaiting_approval", "Independent tests and HTTP contract passed; deployment blocked for approval")
             self.emit("candidate", "Review the patch and approve this artifact digest", digest=self.digest, patch=self.patch)
+            if os.getenv("PUBLISH_FIX", "1") != "0":
+                await self.publish()
+                if self.pr:
+                    self.spawn(self.await_merge())
         except Exception as exc:
             self.transition("failed", str(exc))
 
@@ -260,6 +302,8 @@ class Engine:
         async with self.lock:
             if self.status != "awaiting_approval" or incident != self.incident or digest != self.digest:
                 raise ValueError("Stale or invalid approval; nothing deployed")
+            if self.pr and not self.merged:
+                raise ValueError("Merge the pull request on GitHub to deploy")
             if self.mode == "replay":
                 self.transition("resolved", "SIMULATED approval and recovery; no software deployed")
                 return
@@ -273,10 +317,65 @@ class Engine:
                 self.active = self.candidate
                 await self.contract(self.active)
                 self.transition("resolved", "Post-deploy checks passed; null-coupon checkout recovered")
+                await self.live_check()
             except Exception:
                 self.active = previous
                 self.transition("failed", "Post-deploy verification failed; traffic rolled back")
                 raise ValueError("Deployment failed and was rolled back")
+
+    async def live_check(self):
+        """Call the real, fixed endpoint with the failing request; its access log line shows up in the dashboard."""
+        ok, code = await self.probe(self.active)
+        self.live = (f"POST /checkout with coupon=null on the fixed service: HTTP {code}, totalCents=10000, no error"
+                     if ok else f"Fixed service still fails: HTTP {code}")
+        self.emit("live_check", self.live, ok=ok, code=code)
+
+    async def publish(self):
+        """Commit the verified fix to a new branch of the real repository, push it and open a pull request."""
+        branch, tree = f"self-heal/{self.incident}", self.state / f"publish-{self.incident}"
+        try:
+            await self.command(["git", "worktree", "add", "-b", branch, tree, "main"], cwd=self.root)
+            (tree / SOURCE).write_bytes((self.verify_tree / SOURCE).read_bytes())
+            await self.command(["git", "add", SOURCE], cwd=tree)
+            await self.command(["git", "commit", "-m", "Fix NullPointerException for checkout without coupon",
+                                "-m", "Found in the Quarkus log, repaired by the agent and verified locally."], cwd=tree)
+            await self.command(["git", "push", "-u", "origin", branch], cwd=tree, timeout=60)
+            self.pr = await self.text("gh", "pr", "create", "--base", "main", "--head", branch,
+                "--title", "Fix NullPointerException for checkout without coupon",
+                "--body", "Automated fix.\n\nQuarkus log excerpt the agent worked from:\n\n```\n" + self.exception_excerpt() + "\n```\n\n"
+                          "CI builds the service, runs the contract tests and checks the running app. Merge to deploy.",
+                cwd=tree)
+            self.emit("publish", f"Pushed {branch} and opened pull request {self.pr}", branch=branch, pr=self.pr)
+            self.transition("awaiting_approval", "Pull request open; CI is running. Merge it on GitHub to deploy")
+        except Exception as exc:
+            self.emit("publish", f"Commit/push/PR failed, falling back to dashboard approval: {exc}")
+        finally:
+            with contextlib.suppress(RuntimeError):
+                await self.command(["git", "worktree", "remove", "--force", tree], cwd=self.root)
+
+    async def await_merge(self):
+        """The merge is the approval: poll the PR, mirror CI into the dashboard, deploy once merged."""
+        while self.status == "awaiting_approval":
+            try:
+                info = json.loads(await self.text("gh", "pr", "view", self.pr, "--json", "state,statusCheckRollup", cwd=self.root))
+            except RuntimeError as exc:
+                self.emit("ci", f"Could not read the pull request: {exc}")
+                await asyncio.sleep(10)
+                continue
+            checks = info["statusCheckRollup"]
+            ci = ("no checks yet" if not checks else
+                  "running" if any(c.get("status") not in (None, "COMPLETED") for c in checks) else
+                  "passed" if all(c.get("conclusion", c.get("state")) == "SUCCESS" for c in checks) else "failed")
+            if ci != self.ci:
+                self.ci = ci
+                self.emit("ci", f"CI pipeline: {ci}")
+            if info["state"] == "MERGED":
+                self.merged = True
+                self.emit("merge", "Pull request merged; deploying the tested release")
+                return await self.approve(self.incident, self.digest)
+            if info["state"] == "CLOSED":
+                return await self.reject()
+            await asyncio.sleep(5)
 
     async def reject(self):
         async with self.lock:
@@ -295,6 +394,8 @@ class Engine:
             self.failures = 0
             self.incident = self.digest = None
             self.patch = ""
+            self.live = self.pr = self.ci = None
+            self.merged = False
             self.transition("healthy", "Reset to reproducible baseline")
 
     async def close(self):

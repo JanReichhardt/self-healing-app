@@ -190,7 +190,7 @@
             start.</p>
         <div id="error" role="alert"></div>
         <a href="/api/metrics" target="_blank">Prometheus metrics ↗</a></section>
-    <section class="card"><h2>Deployment approval</h2>
+    <section class="card" id="approval" hidden><h2>Deployment approval</h2>
         <p>Only a clean rebuild that passes independent regression and HTTP tests can reach this gate.</p>
         <pre id="digest">No candidate yet.</pre>
         <button disabled id="approve">Approve tested release</button>
@@ -224,6 +224,7 @@
         } else $('pr').textContent = '';
         $('digest').textContent = s.digest || 'No candidate yet.';
         const ready = s.status === 'awaiting_approval';
+        $('approval').hidden = !ready || !!s.pr; // with a PR, the merge on GitHub is the approval
         $('approve').disabled = $('reject').disabled = !ready;
         $('inject').disabled = s.status !== 'healthy' || s.armed;
         $('reset').disabled = !['healthy', 'resolved', 'rejected', 'failed'].includes(s.status);

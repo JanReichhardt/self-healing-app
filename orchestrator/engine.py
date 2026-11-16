@@ -3,6 +3,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import socket
@@ -11,7 +12,7 @@ import time
 import uuid
 
 import httpx
-from .agent import BUG, FIX, SOURCE
+from .agent import ALLOWED_ROOT, BUG, FIX, SOURCE
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -51,6 +52,10 @@ class Engine:
         self.candidate = None
         self.procs = []
         self.logs = {}
+        self.error_logged = False
+        self.failing = None
+        self.excerpt = ""
+        self.changed = []
         self.tasks = set()
         self.lock = asyncio.Lock()
         self.armed = False
@@ -162,17 +167,19 @@ class Engine:
                 line = f.readline()
                 if line.endswith("\n"):
                     self.emit("log", line.rstrip()[:500], port=port)
+                    if " ERROR " in line and self.logs.get(self.active) == path and self.status == "healthy":
+                        self.error_logged = True
                 else:
                     f.seek(pos)  # partial line: re-read once complete
                     await asyncio.sleep(.3)
 
     def exception_excerpt(self):
-        """The newest ERROR block (with stack trace) the active Quarkus service logged for checkout."""
+        """The newest ERROR block (with stack trace) the active Quarkus service logged."""
         lines = self.logs[self.active].read_text(errors="replace").splitlines()
         errors = [i for i, l in enumerate(lines) if " ERROR " in l]
         excerpt = "\n".join(lines[errors[-1]:errors[-1] + 30]) if errors else ""
-        if "CheckoutResource" not in excerpt:
-            raise ValueError("No checkout exception found in the Quarkus log; nothing to repair")
+        if not excerpt:
+            raise ValueError("No ERROR found in the Quarkus log; nothing to repair")
         return excerpt
 
     async def start(self):
@@ -188,6 +195,7 @@ class Engine:
             # The working tree may sit on a fix branch; the demo baseline must always carry the bug.
             src = self.repo / SOURCE
             src.write_text(src.read_text().replace(FIX, BUG))
+            (self.repo / ".gitignore").write_text("target/\n")
             await self.command(["git", "init", "-b", "demo"], cwd=self.repo)
             await self.command(["git", "add", "."], cwd=self.repo)
             await self.command(["git", "-c", "user.name=Demo", "-c", "user.email=demo@localhost", "commit", "-m", "Reproducible null-coupon baseline"], cwd=self.repo)
@@ -217,9 +225,12 @@ class Engine:
                 self.last_probe = dict(ok=ok, code=code, time=time.time())
                 self.emit("probe", "Synthetic checkout passed" if ok else "Synthetic checkout failed", **self.last_probe)
                 self.failures = 0 if ok else self.failures + 1
-                if self.armed and self.failures >= 2 and self.status == "healthy":
+                if not ok:
+                    self.failing = (payload, 10000 if self.armed else 9000)
+                if self.error_logged and self.status == "healthy":
+                    self.error_logged = False
                     self.incident = uuid.uuid4().hex[:10]
-                    self.transition("detected", "Two consecutive null-coupon failures; incident opened")
+                    self.transition("detected", "ERROR in the Quarkus log; incident opened")
                     self.spawn(self.repair())
             except httpx.HTTPError as exc:
                 self.last_probe = dict(ok=False, code=0, time=time.time())
@@ -247,7 +258,7 @@ class Engine:
 
     async def repair(self):
         try:
-            excerpt = self.exception_excerpt()
+            excerpt = self.excerpt = self.exception_excerpt()
             (self.state / f"exception-{self.incident}.log").write_text(excerpt)
             self.emit("diagnosis", "Agent receives the Quarkus exception from the service log", excerpt=excerpt)
             self.transition("repairing", f"Creating isolated Git worktree; adapter={self.mode}")
@@ -255,24 +266,31 @@ class Engine:
             self.verify_tree = self.state / ("verify-" + self.incident)
             await self.command(["git", "worktree", "add", "--detach", self.agent_tree, self.base], cwd=self.repo)
             await self.command([sys.executable, "-m", "orchestrator.agent", self.agent_tree, self.mode,
-                                self.state / f"exception-{self.incident}.log"], timeout=180,
+                                self.state / f"exception-{self.incident}.log"], timeout=600,
                                logfile=f"agent-{self.incident}.log")
-            # Extract only the approved regular source file, never run the agent's build/test files.
-            source = self.agent_tree / SOURCE
-            if source.is_symlink() or not source.is_file() or source.stat().st_size > 50000:
-                raise ValueError("Invalid source proposal")
-            changes = await self.git_text("diff", self.base, "--name-only", cwd=self.agent_tree)
-            untracked = await self.git_text("ls-files", "--others", "--exclude-standard", cwd=self.agent_tree)
-            if changes != SOURCE or untracked:
+            # Extract only regular Java files under the allowed source root; never run the agent's build/test files.
+            await self.command(["git", "add", "-A"], cwd=self.agent_tree)
+            status = (await self.git_text("diff", "--cached", "--name-status", self.base, cwd=self.agent_tree)).splitlines()
+            self.changed = [l.split("\t", 1)[1] for l in status if l.startswith(("A\t", "M\t"))]
+            if not status or len(self.changed) != len(status) or len(self.changed) > 5 or not all(
+                    f.startswith(ALLOWED_ROOT) and f.endswith(".java") and (self.agent_tree / f).is_file()
+                    and not (self.agent_tree / f).is_symlink() and (self.agent_tree / f).stat().st_size <= 50000
+                    for f in self.changed):
                 raise ValueError("Proposal changed files outside the source allowlist or made no change")
-            self.patch = await self.git_text("diff", self.base, "--", SOURCE, cwd=self.agent_tree)
-            proposal = source.read_bytes()
+            self.patch = await self.git_text("diff", "--cached", self.base, cwd=self.agent_tree)
+            proposal = {f: (self.agent_tree / f).read_bytes() for f in self.changed}
             self.transition("verifying", "Rebuilding in a separate clean checkout with trusted regression tests")
             await self.command(["git", "worktree", "add", "--detach", self.verify_tree, self.base], cwd=self.repo)
-            (self.verify_tree / SOURCE).write_bytes(proposal)
+            for f, data in proposal.items():
+                (self.verify_tree / f).parent.mkdir(parents=True, exist_ok=True)
+                (self.verify_tree / f).write_bytes(data)
             await self.build(self.verify_tree, contract=True)
             self.candidate = await self.launch(self.verify_tree)
             await self.contract(self.candidate)
+            if self.failing:  # the request that triggered the incident must now succeed
+                ok, code = await self.probe(self.candidate, *self.failing)
+                if not ok:
+                    raise ValueError(f"Fix does not resolve the failing request (HTTP {code})")
             self.release = self.verify_tree / "service/target/quarkus-app"
             self.digest = digest_tree(self.release)
             self.transition("awaiting_approval", "Independent tests and HTTP contract passed; deployment blocked for approval")
@@ -335,14 +353,18 @@ class Engine:
         branch, tree = f"self-heal/{self.incident}", self.state / f"publish-{self.incident}"
         try:
             await self.command(["git", "worktree", "add", "-b", branch, tree, "main"], cwd=self.root)
-            (tree / SOURCE).write_bytes((self.verify_tree / SOURCE).read_bytes())
-            await self.command(["git", "add", SOURCE], cwd=tree)
-            await self.command(["git", "commit", "-m", "Fix NullPointerException for checkout without coupon",
+            for f in self.changed:
+                (tree / f).parent.mkdir(parents=True, exist_ok=True)
+                (tree / f).write_bytes((self.verify_tree / f).read_bytes())
+            await self.command(["git", "add", *self.changed], cwd=tree)
+            m = re.search(r"([\w.]+(?:Exception|Error))", self.excerpt)
+            title = f"Fix {m.group(1).rsplit('.', 1)[-1] if m else 'error'} found in the Quarkus log"
+            await self.command(["git", "commit", "-m", title,
                                 "-m", "Found in the Quarkus log, repaired by the agent and verified locally."], cwd=tree)
             await self.command(["git", "push", "-u", "origin", branch], cwd=tree, timeout=60)
             self.pr = await self.text("gh", "pr", "create", "--base", "main", "--head", branch,
-                "--title", "Fix NullPointerException for checkout without coupon",
-                "--body", "Automated fix.\n\nQuarkus log excerpt the agent worked from:\n\n```\n" + self.exception_excerpt() + "\n```\n\n"
+                "--title", title,
+                "--body", "Automated fix.\n\nQuarkus log excerpt the agent worked from:\n\n```\n" + self.excerpt + "\n```\n\n"
                           "CI builds the service, runs the contract tests and checks the running app. Merge to deploy.",
                 cwd=tree)
             self.emit("publish", f"Pushed {branch} and opened pull request {self.pr}", branch=branch, pr=self.pr)

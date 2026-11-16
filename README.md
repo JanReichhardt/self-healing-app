@@ -56,7 +56,7 @@ export ACP_MODEL=sonnet   # optional
 ./scripts/start.sh
 ```
 
-The adapter uses the OpenHands SDK's `ACPAgent` (Claude Code via `claude-agent-acp`) in a `LocalConversation`, with a 180-second process timeout. Authentication comes from your Claude subscription login; never put tokens into Git. Claude Code brings its own tools (including shell), so the file-only restriction no longer applies at the agent level; safety rests on the detached worktree and the allowlisted-file import below.
+The adapter uses the OpenHands SDK's `ACPAgent` (Claude Code via `claude-agent-acp`) in a `LocalConversation`, with a 600-second process timeout. Authentication comes from your Claude subscription login; never put tokens into Git. Claude Code brings its own tools (including shell), so the file-only restriction no longer applies at the agent level; safety rests on the detached worktree and the allowlisted Java-file import below.
 
 The agent receives the newest checkout exception from the Quarkus log. After verification the engine pushes `self-heal/<incident>`, opens a PR (CI: `.github/workflows/ci.yml`); merging it deploys the fix. Set `PUBLISH_FIX=0` to skip the push/PR and approve in the dashboard instead. It edits a detached Git worktree, and the controller imports only the allowlisted Java source file into a **different** clean verification worktree. It never executes build configuration or tests supplied by the agent. Agent logs are local under `.state/agent-<incident>.log`.
 

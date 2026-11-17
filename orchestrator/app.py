@@ -8,8 +8,9 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse, Response
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from pydantic import BaseModel
-from .engine import Engine, ROOT
+from pydantic import BaseModel, Field
+from .engine import Engine
+from .target import ROOT, T
 
 engine = Engine()
 TOKEN = os.getenv("DEMO_TOKEN", secrets.token_urlsafe(24))
@@ -70,6 +71,9 @@ class Approval(BaseModel):
     incident: str
     digest: str
 
+class Alert(BaseModel):
+    excerpt: str = Field(min_length=1, max_length=8000)
+
 async def action(coro):
     try:
         await coro
@@ -83,27 +87,29 @@ async def inject(): return await action(engine.inject())
 async def reset(): return await action(engine.reset())
 @app.post("/api/reject")
 async def reject(): return await action(engine.reject())
+@app.post("/api/alert")
+async def alert(body: Alert): return await action(engine.alert(body.excerpt))
 @app.post("/api/approve")
 async def approve(body: Approval): return await action(engine.approve(body.incident, body.digest))
 
-@app.post("/checkout")
+@app.post(T["endpoint"])
 async def checkout(request: Request):
     if not engine.active:
-        raise HTTPException(503, "Java service unavailable (or replay mode)")
+        raise HTTPException(503, "Service unavailable (or replay mode)")
     body = await request.body()
     if len(body) > 16384:
         raise HTTPException(413)
     try:
         async with httpx.AsyncClient(timeout=5) as client:
-            r = await client.post(engine.active + "/checkout", content=body, headers={"content-type":"application/json"})
+            r = await client.post(engine.active + T["endpoint"], content=body, headers={"content-type":"application/json"})
         return Response(r.content, status_code=r.status_code, media_type=r.headers.get("content-type"))
     except httpx.HTTPError as exc:
         raise HTTPException(503, "Checkout unavailable") from exc
 
 @app.get("/api/metrics")
 async def metrics():
-    if not engine.active:
+    if not engine.active or not T.get("metrics_path"):
         raise HTTPException(503)
     async with httpx.AsyncClient(timeout=5) as client:
-        r = await client.get(engine.active + "/q/metrics")
+        r = await client.get(engine.active + T["metrics_path"])
     return Response(r.content, media_type="text/plain")

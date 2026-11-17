@@ -76,3 +76,26 @@ def test_openhands_adapter_initializes_without_model_call(tmp_path, monkeypatch)
     with patch.object(sdk.LocalConversation,'run') as run:
         repair(workspace,'openhands')
         run.assert_called_once()
+
+
+def test_alert_opens_incident_only_when_healthy_and_live(tmp_path, monkeypatch):
+    monkeypatch.setenv('AGENT_MODE','deterministic')
+    e=Engine(tmp_path); seen=[]
+    async def repair(excerpt): seen.append(excerpt)
+    e.repair=repair
+    with pytest.raises(ValueError): asyncio.run(e.alert('trace'))  # status is booting
+    e.status='healthy'
+    async def go(): await e.alert('trace'); await asyncio.gather(*e.tasks)
+    asyncio.run(go())
+    assert seen==['trace'] and e.status=='detected' and e.incident
+    monkeypatch.setenv('AGENT_MODE','replay'); r=Engine(tmp_path); r.status='healthy'
+    with pytest.raises(ValueError): asyncio.run(r.alert('trace'))
+
+
+def test_agent_prompts_are_framework_neutral_and_triage_is_read_only(tmp_path):
+    from orchestrator.agent import prompt
+    log=tmp_path/'e.log'; log.write_text('boom'); notes=tmp_path/'n.txt'; notes.write_text('FIXABLE: yes')
+    for text in (prompt('triage',log,notes), prompt('fix',log,notes)):
+        assert 'boom' in text and 'Quarkus' not in text and 'mvn' not in text and 'Maven' not in text
+    assert 'Do NOT modify' in prompt('triage',log,notes)
+    repair(tmp_path,'deterministic',log,'triage',notes); assert notes.read_text().startswith('FIXABLE: yes')

@@ -1,0 +1,29 @@
+{
+  "app_dir": "examples/python-service",
+  "ignore": ["__pycache__"],
+  "build": [],
+  "trusted_files": {},
+  "run": ["python3", "-B", "server.py"],
+  "ready_path": "/health",
+  "release_dir": ".",
+  "metrics_path": "",
+  "error_marker": " ERROR ",
+  "endpoint": "/discount",
+  "normal": {"json": {"price_cents": 10000, "code": "SAVE10"}, "body": {"total_cents": 9000}},
+  "fault": {"json": {"price_cents": 10000, "code": null}, "body": {"total_cents": 10000}},
+  "contract": [
+    {"json": {"price_cents": 10000}, "body": {"total_cents": 10000}},
+    {"json": {"price_cents": 10000, "code": null}, "body": {"total_cents": 10000}},
+    {"json": {"price_cents": 10000, "code": "  "}, "body": {"total_cents": 10000}},
+    {"json": {"price_cents": 10000, "code": " save10 "}, "body": {"total_cents": 9000}},
+    {"json": {"price_cents": -1}, "status": 400}
+  ],
+  "allowed_root": "examples/python-service/",
+  "allowed_suffixes": [".py"],
+  "fixture": {
+    "file": "examples/python-service/server.py",
+    "bug": "code = body[\"code\"].strip().upper()",
+    "fix": "code = (body.get(\"code\") or \"\").strip().upper()",
+    "diagnosis": "the optional code is used without a presence check"
+  }
+}

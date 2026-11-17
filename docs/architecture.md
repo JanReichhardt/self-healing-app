@@ -41,7 +41,7 @@ flowchart LR
 ## Processes and ports
 
 - **Orchestrator**: one uvicorn process, `127.0.0.1:8000` (`PORT` to change).
-- **Quarkus**: one `java -jar quarkus-run.jar` process per launch, each on a free port (`free_port()`): the baseline at startup, the candidate during verification. Each writes `.state/java-<port>.log`.
+- **Quarkus**: one `java -jar quarkus-run.jar` process per launch, each on a free port (`free_port()`): the baseline at startup, the candidate during verification. Each writes `.state/app-<port>.log`.
 - **Agent**: `python -m orchestrator.agent <worktree> <mode> <exception-log>` per incident. In `openhands` mode it starts `npx -y @agentclientprotocol/claude-agent-acp`, which uses your local `claude login` session.
 - **Active service**: `engine.active` is the URL traffic goes to. Deployment is just reassigning this pointer after checks pass. The dashboard's `/checkout` proxy and the probe monitor follow it.
 
@@ -53,7 +53,7 @@ flowchart LR
 | `agent-<incident>/` | Detached worktree of the baseline. The only place the agent writes. |
 | `verify-<incident>/` | Second detached worktree. Only the agent's single source file is copied in, plus the trusted contract test. Built and run from here. |
 | `publish-<incident>/` | Temporary worktree of the *real* repo (`main`) used to commit and push the fix. Removed afterwards. |
-| `java-<port>.log` | Quarkus stdout/stderr. Source for the dashboard log card and for the agent's diagnosis. |
+| `app-<port>.log` | Quarkus stdout/stderr. Source for the dashboard log card and for the agent's diagnosis. |
 | `exception-<incident>.log` | The ERROR block handed to the agent. |
 | `agent-<incident>.log` | Agent subprocess output. First place to look if repair fails. |
 | `events.jsonl` | Every event ever emitted (also streamed over SSE). |

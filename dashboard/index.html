@@ -184,7 +184,7 @@
         <p id="probe">Waiting for first synthetic checkout…</p>
         <p id="live" style="font-weight:600"></p>
         <p id="pr"></p>
-        <button id="inject">Inject null coupon</button>
+        <button id="inject">Inject fault</button>
         <button class="secondary" id="reset">Reset demo</button>
         <p class="small">Injection changes synthetic traffic. The source contains the reproducible bug from the
             start.</p>
@@ -196,11 +196,17 @@
         <button disabled id="approve">Approve tested release</button>
         <button class="secondary" disabled id="reject">Reject</button>
         <p class="small">Approval is bound to the incident and artifact SHA-256.</p></section>
+    <section class="card"><h2>Triage: root cause</h2>
+        <pre id="diagnosis">The agent's diagnosis appears here before it changes any code.</pre>
+    </section>
     <section class="card"><h2>Proposed source change</h2>
         <pre id="patch">The proposed patch will appear here.</pre>
     </section>
-    <section class="card"><h2>Quarkus service log</h2>
+    <section class="card"><h2>Service log</h2>
         <pre id="log" style="max-height:18rem;overflow:auto">Waiting for log output…</pre>
+    </section>
+    <section class="card"><h2>Agent activity</h2>
+        <pre id="agent" style="max-height:18rem;overflow:auto">The agent's output appears here during repair.</pre>
     </section>
     <section class="card"><h2>Live event stream <span class="small" id="connection">• connecting</span></h2>
         <div aria-live="polite" id="timeline"></div>
@@ -209,12 +215,13 @@
 <script>
     let state = {}, token = '';
     const $ = id => document.getElementById(id);
-    const phases = ['healthy', 'detected', 'repairing', 'verifying', 'awaiting_approval', 'resolved'];
+    const phases = ['healthy', 'detected', 'triaging', 'repairing', 'verifying', 'awaiting_approval', 'resolved'];
 
     function render(s) {
         state = s;
         $('mode').textContent = s.mode === 'replay' ? 'REPLAY · SIMULATED' : s.mode === 'deterministic' ? 'LIVE · DETERMINISTIC REPAIR' : 'LIVE · OPENHANDS';
         $('status').textContent = s.status.replaceAll('_', ' ');
+        $('diagnosis').textContent = s.diagnosis || 'The agent\'s diagnosis appears here before it changes any code.';
         $('patch').textContent = s.patch || 'The proposed patch will appear here.';
         $('live').textContent = s.live ? (s.status === 'failed' ? '✗ ' : '✓ ') + s.live : '';
         if (s.pr) {
@@ -234,7 +241,7 @@
             el.textContent = x.replaceAll('_', ' ');
             return el
         }));
-        if (s.last_probe) $('probe').textContent = `Synthetic checkout: ${s.last_probe.ok ? 'PASS' : 'FAIL'} · HTTP ${s.last_probe.code}`;
+        if (s.last_probe) $('probe').textContent = `Synthetic probe: ${s.last_probe.ok ? 'PASS' : 'FAIL'} · HTTP ${s.last_probe.code}`;
     }
 
     async function refresh() {
@@ -270,8 +277,8 @@
         events.onerror = () => $('connection').textContent = '• reconnecting';
         events.onmessage = e => {
             const data = JSON.parse(e.data);
-            if (data.kind === 'log') {
-                const log = $('log'), end = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+            if (data.kind === 'log' || data.kind === 'agent') {
+                const log = $(data.kind), end = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
                 if (log.dataset.live !== '1') { log.textContent = ''; log.dataset.live = '1'; }
                 log.append(data.message + '\n');
                 while (log.textContent.length > 60000) log.firstChild.remove();

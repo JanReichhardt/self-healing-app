@@ -12,9 +12,8 @@ import time
 import uuid
 
 import httpx
-from .agent import ALLOWED_ROOT, BUG, FIX, SOURCE
-
-ROOT = Path(__file__).resolve().parents[1]
+from .agent import ALLOWED_ROOT, ALLOWED_SUFFIXES, BUG, FIX, SOURCE
+from .target import ROOT, T
 
 
 def digest_tree(path):
@@ -46,6 +45,7 @@ class Engine:
         self.status = "booting"
         self.incident = None
         self.patch = ""
+        self.diagnosis = ""
         self.digest = None
         self.active = None
         self.baseline = None
@@ -80,7 +80,7 @@ class Engine:
 
     def snapshot(self):
         return dict(status=self.status, mode=self.mode, incident=self.incident,
-                    patch=self.patch, digest=self.digest, armed=self.armed,
+                    patch=self.patch, diagnosis=self.diagnosis, digest=self.digest, armed=self.armed,
                     last_probe=self.last_probe, live=self.live, pr=self.pr, ci=self.ci, event_count=len(self.events))
 
     def spawn(self, coro):
@@ -127,59 +127,63 @@ class Engine:
             raise RuntimeError(err.decode())
         return out.decode().strip()
 
+    def fmt(self, cmd, **kw):
+        return [a.format(state=self.state, **kw) for a in cmd]
+
     async def build(self, checkout, contract=False):
-        if contract:
-            dest = checkout / "service/src/test/java/demo/CheckoutContractTest.java"
-            dest.write_bytes((self.root / "verification/CheckoutContractTest.java").read_bytes())
-        await self.command(["mvn", "-B", "-ntp", "-Dquarkus.analytics.disabled=true", f"-Dmaven.repo.local={self.state / 'm2'}",
-                            "clean", "package"], cwd=checkout / "service", timeout=600)
+        if contract:  # controller-owned tests overwrite whatever the agent wrote
+            for src, dest in T["trusted_files"].items():
+                (checkout / dest).parent.mkdir(parents=True, exist_ok=True)
+                (checkout / dest).write_bytes((self.root / src).read_bytes())
+        if T["build"]:
+            await self.command(self.fmt(T["build"]), cwd=checkout / T["app_dir"], timeout=600)
 
     async def launch(self, checkout):
         port = free_port()
-        logfile = (self.state / f"java-{port}.log").open("ab")
+        logfile = (self.state / f"app-{port}.log").open("ab")
         try:
-            proc = await asyncio.create_subprocess_exec("java", f"-Dquarkus.http.port={port}",
-                "-jar", str(checkout / "service/target/quarkus-app/quarkus-run.jar"),
+            proc = await asyncio.create_subprocess_exec(*self.fmt(T["run"], port=port), cwd=checkout / T["app_dir"],
+                env={**os.environ, "PORT": str(port)},
                 stdout=logfile, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
         finally:
             logfile.close()
         self.procs.append(proc)
         url = f"http://127.0.0.1:{port}"
-        self.logs[url] = self.state / f"java-{port}.log"
+        self.logs[url] = self.state / f"app-{port}.log"
         self.spawn(self.follow(self.logs[url], port))
         async with httpx.AsyncClient(timeout=2) as client:
             for _ in range(100):
                 if proc.returncode is not None:
-                    raise RuntimeError(f"Java exited; see .state/java-{port}.log")
+                    raise RuntimeError(f"App exited; see .state/app-{port}.log")
                 try:
-                    if (await client.get(url + "/q/health/ready")).status_code == 200:
+                    if (await client.get(url + T["ready_path"])).status_code == 200:
                         return url
                 except httpx.HTTPError:
                     pass
                 await asyncio.sleep(.2)
-        raise RuntimeError("Java readiness timeout")
+        raise RuntimeError("App readiness timeout")
 
-    async def follow(self, path, port):
-        """Stream a Quarkus log file to the dashboard, one event per line."""
+    async def follow(self, path, port=None, kind="log"):
+        """Stream a log file (service or agent) to the dashboard, one event per line."""
         with path.open(errors="replace") as f:
             while True:
                 pos = f.tell()
                 line = f.readline()
                 if line.endswith("\n"):
-                    self.emit("log", line.rstrip()[:500], port=port)
-                    if " ERROR " in line and self.logs.get(self.active) == path and self.status == "healthy":
+                    self.emit(kind, line.rstrip()[:500], port=port)
+                    if T["error_marker"] in line and self.logs.get(self.active) == path and self.status == "healthy":
                         self.error_logged = True
                 else:
                     f.seek(pos)  # partial line: re-read once complete
                     await asyncio.sleep(.3)
 
     def exception_excerpt(self):
-        """The newest ERROR block (with stack trace) the active Quarkus service logged."""
+        """The newest error block (with stack trace) the active service logged."""
         lines = self.logs[self.active].read_text(errors="replace").splitlines()
-        errors = [i for i, l in enumerate(lines) if " ERROR " in l]
+        errors = [i for i, l in enumerate(lines) if T["error_marker"] in l]
         excerpt = "\n".join(lines[errors[-1]:errors[-1] + 30]) if errors else ""
         if not excerpt:
-            raise ValueError("No ERROR found in the Quarkus log; nothing to repair")
+            raise ValueError("No error found in the service log; nothing to repair")
         return excerpt
 
     async def start(self):
@@ -191,46 +195,46 @@ class Engine:
             self.repo = self.state / ("repo-" + uuid.uuid4().hex[:8])
             self.repo.mkdir()
             import shutil
-            shutil.copytree(self.root / "service", self.repo / "service", ignore=shutil.ignore_patterns("target"))
-            # The working tree may sit on a fix branch; the demo baseline must always carry the bug.
-            src = self.repo / SOURCE
-            src.write_text(src.read_text().replace(FIX, BUG))
-            (self.repo / ".gitignore").write_text("target/\n")
+            shutil.copytree(self.root / T["app_dir"], self.repo / T["app_dir"], ignore=shutil.ignore_patterns(*T["ignore"]))
+            if SOURCE:  # The working tree may sit on a fix branch; the demo baseline must always carry the bug.
+                src = self.repo / SOURCE
+                src.write_text(src.read_text().replace(FIX, BUG))
+            (self.repo / ".gitignore").write_text("".join(f"{p}/\n" for p in T["ignore"]))
             await self.command(["git", "init", "-b", "demo"], cwd=self.repo)
             await self.command(["git", "add", "."], cwd=self.repo)
-            await self.command(["git", "-c", "user.name=Demo", "-c", "user.email=demo@localhost", "commit", "-m", "Reproducible null-coupon baseline"], cwd=self.repo)
+            await self.command(["git", "-c", "user.name=Demo", "-c", "user.email=demo@localhost", "commit", "-m", "Reproducible baseline"], cwd=self.repo)
             self.base = await self.git_text("rev-parse", "HEAD")
-            self.transition("building", "Building the intentionally buggy baseline")
+            self.transition("building", "Building the baseline, which carries the bug")
             await self.build(self.repo)
             self.baseline = self.active = await self.launch(self.repo)
-            self.transition("healthy", "Baseline ready; valid coupon traffic succeeds")
+            self.transition("healthy", "Baseline ready; normal traffic succeeds")
             self.spawn(self.monitor())
         except Exception as exc:
             self.transition("failed", str(exc))
 
-    async def probe(self, url, payload=None, expected=10000):
+    async def probe(self, url, case):
         async with httpx.AsyncClient(timeout=4) as client:
-            r = await client.post(url + "/checkout", json=payload if payload is not None else {"subtotalCents":10000,"coupon":None})
-            try:
-                body = r.json()
-            except ValueError:
-                body = {}
-            return r.status_code == 200 and body == {"totalCents":expected,"currency":"EUR"}, r.status_code
+            r = await client.post(url + T["endpoint"], json=case["json"])
+        try:
+            body = r.json()
+        except ValueError:
+            body = None
+        return r.status_code == case.get("status", 200) and ("body" not in case or body == case["body"]), r.status_code
 
     async def monitor(self):
         while True:
             try:
-                payload = {"subtotalCents":10000,"coupon":None if self.armed else "SAVE10"}
-                ok, code = await self.probe(self.active, payload, 10000 if self.armed else 9000)
+                case = T["fault"] if self.armed else T["normal"]
+                ok, code = await self.probe(self.active, case)
                 self.last_probe = dict(ok=ok, code=code, time=time.time())
-                self.emit("probe", "Synthetic checkout passed" if ok else "Synthetic checkout failed", **self.last_probe)
+                self.emit("probe", "Synthetic probe passed" if ok else "Synthetic probe failed", **self.last_probe)
                 self.failures = 0 if ok else self.failures + 1
                 if not ok:
-                    self.failing = (payload, 10000 if self.armed else 9000)
+                    self.failing = case
                 if self.error_logged and self.status == "healthy":
                     self.error_logged = False
                     self.incident = uuid.uuid4().hex[:10]
-                    self.transition("detected", "ERROR in the Quarkus log; incident opened")
+                    self.transition("detected", "Error in the service log; incident opened")
                     self.spawn(self.repair())
             except httpx.HTTPError as exc:
                 self.last_probe = dict(ok=False, code=0, time=time.time())
@@ -243,7 +247,7 @@ class Engine:
             if self.status != "healthy" or self.armed:
                 raise ValueError("Reset to a healthy baseline before injecting")
             self.armed = True
-            self.emit("injection", "Synthetic traffic now omits the optional coupon")
+            self.emit("injection", "Fault injected: synthetic traffic now sends the failing request")
             if self.mode == "replay":
                 self.incident = uuid.uuid4().hex[:10]
                 self.spawn(self.replay())
@@ -256,24 +260,46 @@ class Engine:
         self.digest = "replay-simulated-release"
         self.emit("candidate", "Replay approval available", digest=self.digest)
 
-    async def repair(self):
+    async def alert(self, excerpt):
+        """External trigger (e.g. a Sentry/Datadog webhook): the alert's stack trace replaces the log tail."""
+        async with self.lock:
+            if self.mode == "replay" or self.status != "healthy":
+                raise ValueError("Alert ignored: needs a healthy live service")
+            self.incident = uuid.uuid4().hex[:10]
+            self.transition("detected", "External alert received; incident opened")
+            self.spawn(self.repair(excerpt))
+
+    async def repair(self, alert_excerpt=None):
         try:
-            excerpt = self.excerpt = self.exception_excerpt()
+            excerpt = self.excerpt = alert_excerpt or self.exception_excerpt()
             (self.state / f"exception-{self.incident}.log").write_text(excerpt)
-            self.emit("diagnosis", "Agent receives the Quarkus exception from the service log", excerpt=excerpt)
-            self.transition("repairing", f"Creating isolated Git worktree; adapter={self.mode}")
+            self.emit("diagnosis", "Agent receives the exception from the service log", excerpt=excerpt)
+            self.transition("triaging", f"Agent diagnoses the root cause, read-only; adapter={self.mode}")
             self.agent_tree = self.state / ("agent-" + self.incident)
             self.verify_tree = self.state / ("verify-" + self.incident)
             await self.command(["git", "worktree", "add", "--detach", self.agent_tree, self.base], cwd=self.repo)
-            await self.command([sys.executable, "-m", "orchestrator.agent", self.agent_tree, self.mode,
-                                self.state / f"exception-{self.incident}.log"], timeout=600,
-                               logfile=f"agent-{self.incident}.log")
-            # Extract only regular Java files under the allowed source root; never run the agent's build/test files.
+            agent_log = self.state / f"agent-{self.incident}.log"
+            agent_log.touch()
+            self.spawn(self.follow(agent_log, kind="agent"))  # the agent's reasoning shows up live on the dashboard
+            notes = self.state / f"triage-{self.incident}.txt"
+            agent = [sys.executable, "-m", "orchestrator.agent", self.agent_tree, self.mode, self.state / f"exception-{self.incident}.log"]
+            await self.command([*agent, "triage", notes], timeout=600, logfile=agent_log.name)
+            if await self.git_text("status", "--porcelain", cwd=self.agent_tree):
+                raise ValueError("Triage must not modify files")
+            if not notes.exists():
+                raise ValueError("Triage produced no diagnosis")
+            self.diagnosis = notes.read_text()[:4000]
+            self.emit("triage", "Root-cause diagnosis ready", diagnosis=self.diagnosis)
+            if self.diagnosis.lstrip().upper().startswith("FIXABLE: NO"):
+                raise ValueError("Triage: not a code bug the agent can fix; see the diagnosis")
+            self.transition("repairing", "Agent fixes the root cause in the isolated worktree")
+            await self.command([*agent, "fix", notes], timeout=600, logfile=agent_log.name)
+            # Extract only regular allowlisted files under the allowed source root; never run the agent's build/test files.
             await self.command(["git", "add", "-A"], cwd=self.agent_tree)
             status = (await self.git_text("diff", "--cached", "--name-status", self.base, cwd=self.agent_tree)).splitlines()
             self.changed = [l.split("\t", 1)[1] for l in status if l.startswith(("A\t", "M\t"))]
             if not status or len(self.changed) != len(status) or len(self.changed) > 5 or not all(
-                    f.startswith(ALLOWED_ROOT) and f.endswith(".java") and (self.agent_tree / f).is_file()
+                    f.startswith(ALLOWED_ROOT) and f.endswith(ALLOWED_SUFFIXES) and (self.agent_tree / f).is_file()
                     and not (self.agent_tree / f).is_symlink() and (self.agent_tree / f).stat().st_size <= 50000
                     for f in self.changed):
                 raise ValueError("Proposal changed files outside the source allowlist or made no change")
@@ -288,10 +314,10 @@ class Engine:
             self.candidate = await self.launch(self.verify_tree)
             await self.contract(self.candidate)
             if self.failing:  # the request that triggered the incident must now succeed
-                ok, code = await self.probe(self.candidate, *self.failing)
+                ok, code = await self.probe(self.candidate, self.failing)
                 if not ok:
                     raise ValueError(f"Fix does not resolve the failing request (HTTP {code})")
-            self.release = self.verify_tree / "service/target/quarkus-app"
+            self.release = self.verify_tree / T["app_dir"] / T["release_dir"]
             self.digest = digest_tree(self.release)
             self.transition("awaiting_approval", "Independent tests and HTTP contract passed; deployment blocked for approval")
             self.emit("candidate", "Review the patch and approve this artifact digest", digest=self.digest, patch=self.patch)
@@ -303,18 +329,10 @@ class Engine:
             self.transition("failed", str(exc))
 
     async def contract(self, url):
-        cases = [({"subtotalCents":10000},10000), ({"subtotalCents":10000,"coupon":None},10000),
-                 ({"subtotalCents":10000,"coupon":"  "},10000), ({"subtotalCents":10000,"coupon":"NOPE"},10000),
-                 ({"subtotalCents":10000,"coupon":" save10 "},9000), ({"subtotalCents":0},0)]
-        for payload, expected in cases:
-            ok, _ = await self.probe(url, payload, expected)
+        for case in T["contract"]:
+            ok, _ = await self.probe(url, case)
             if not ok:
-                raise ValueError(f"Independent HTTP contract failed for {payload}")
-        async with httpx.AsyncClient(timeout=4) as client:
-            for n in [-1, 1000001]:
-                r = await client.post(url + "/checkout", json={"subtotalCents":n})
-                if r.status_code != 400:
-                    raise ValueError("Invalid subtotal was not rejected")
+                raise ValueError(f"Independent HTTP contract failed for {case['json']}")
 
     async def approve(self, incident, digest):
         async with self.lock:
@@ -334,7 +352,7 @@ class Engine:
                 await self.contract(self.candidate)
                 self.active = self.candidate
                 await self.contract(self.active)
-                self.transition("resolved", "Post-deploy checks passed; null-coupon checkout recovered")
+                self.transition("resolved", "Post-deploy checks passed; the failing request recovered")
                 await self.live_check()
             except Exception:
                 self.active = previous
@@ -343,8 +361,8 @@ class Engine:
 
     async def live_check(self):
         """Call the real, fixed endpoint with the failing request; its access log line shows up in the dashboard."""
-        ok, code = await self.probe(self.active)
-        self.live = (f"POST /checkout with coupon=null on the fixed service: HTTP {code}, totalCents=10000, no error"
+        ok, code = await self.probe(self.active, T["fault"])
+        self.live = (f"POST {T['endpoint']} with the failing request on the fixed service: HTTP {code}, as expected"
                      if ok else f"Fixed service still fails: HTTP {code}")
         self.emit("live_check", self.live, ok=ok, code=code)
 
@@ -358,13 +376,13 @@ class Engine:
                 (tree / f).write_bytes((self.verify_tree / f).read_bytes())
             await self.command(["git", "add", *self.changed], cwd=tree)
             m = re.search(r"([\w.]+(?:Exception|Error))", self.excerpt)
-            title = f"Fix {m.group(1).rsplit('.', 1)[-1] if m else 'error'} found in the Quarkus log"
+            title = f"Fix {m.group(1).rsplit('.', 1)[-1] if m else 'error'} found in the service log"
             await self.command(["git", "commit", "-m", title,
-                                "-m", "Found in the Quarkus log, repaired by the agent and verified locally."], cwd=tree)
+                                "-m", "Found in the service log, repaired by the agent and verified locally."], cwd=tree)
             await self.command(["git", "push", "-u", "origin", branch], cwd=tree, timeout=60)
             self.pr = await self.text("gh", "pr", "create", "--base", "main", "--head", branch,
                 "--title", title,
-                "--body", "Automated fix.\n\nQuarkus log excerpt the agent worked from:\n\n```\n" + self.excerpt + "\n```\n\n"
+                "--body", "Automated fix.\n\nService log excerpt the agent worked from:\n\n```\n" + self.excerpt + "\n```\n\n"
                           "CI builds the service, runs the contract tests and checks the running app. Merge to deploy.",
                 cwd=tree)
             self.emit("publish", f"Pushed {branch} and opened pull request {self.pr}", branch=branch, pr=self.pr)
@@ -415,7 +433,7 @@ class Engine:
             self.armed = False
             self.failures = 0
             self.incident = self.digest = None
-            self.patch = ""
+            self.patch = self.diagnosis = ""
             self.live = self.pr = self.ci = None
             self.merged = False
             self.transition("healthy", "Reset to reproducible baseline")

@@ -1,0 +1,32 @@
+{
+  "app_dir": "service",
+  "ignore": ["target"],
+  "build": ["mvn", "-B", "-ntp", "-Dquarkus.analytics.disabled=true", "-Dmaven.repo.local={state}/m2", "clean", "package"],
+  "trusted_files": {"verification/CheckoutContractTest.java": "service/src/test/java/demo/CheckoutContractTest.java"},
+  "run": ["java", "-Dquarkus.http.port={port}", "-jar", "target/quarkus-app/quarkus-run.jar"],
+  "ready_path": "/q/health/ready",
+  "release_dir": "target/quarkus-app",
+  "metrics_path": "/q/metrics",
+  "error_marker": " ERROR ",
+  "endpoint": "/checkout",
+  "normal": {"json": {"subtotalCents": 10000, "coupon": "SAVE10"}, "body": {"totalCents": 9000, "currency": "EUR"}},
+  "fault": {"json": {"subtotalCents": 10000, "coupon": null}, "body": {"totalCents": 10000, "currency": "EUR"}},
+  "contract": [
+    {"json": {"subtotalCents": 10000}, "body": {"totalCents": 10000, "currency": "EUR"}},
+    {"json": {"subtotalCents": 10000, "coupon": null}, "body": {"totalCents": 10000, "currency": "EUR"}},
+    {"json": {"subtotalCents": 10000, "coupon": "  "}, "body": {"totalCents": 10000, "currency": "EUR"}},
+    {"json": {"subtotalCents": 10000, "coupon": "NOPE"}, "body": {"totalCents": 10000, "currency": "EUR"}},
+    {"json": {"subtotalCents": 10000, "coupon": " save10 "}, "body": {"totalCents": 9000, "currency": "EUR"}},
+    {"json": {"subtotalCents": 0}, "body": {"totalCents": 0, "currency": "EUR"}},
+    {"json": {"subtotalCents": -1}, "status": 400},
+    {"json": {"subtotalCents": 1000001}, "status": 400}
+  ],
+  "allowed_root": "service/src/main/java/",
+  "allowed_suffixes": [".java"],
+  "fixture": {
+    "file": "service/src/main/java/demo/CheckoutResource.java",
+    "bug": "String coupon = order.coupon().trim();",
+    "fix": "String coupon = order.coupon() == null ? \"\" : order.coupon().trim();",
+    "diagnosis": "the optional coupon is dereferenced without a null check"
+  }
+}

@@ -8,7 +8,9 @@ stateDiagram-v2
   booting --> building: start()
   building --> healthy: baseline built and ready
   healthy --> detected: ERROR appears in the Quarkus log
-  detected --> repairing: exception found in log
+  detected --> triaging: exception found in log
+  triaging --> repairing: diagnosis says FIXABLE yes
+  triaging --> failed: FIXABLE no or files changed
   repairing --> verifying: agent change passes allowlist
   verifying --> awaiting_approval: tests + HTTP contract pass
   awaiting_approval --> deploying: PR merged (or dashboard approve if no PR)
@@ -36,14 +38,14 @@ Every 2 s the engine POSTs a synthetic checkout to the active service.
 Before injection: `coupon="SAVE10"`, expects `totalCents=9000`. That works on the buggy code because the coupon is not null.
 
 ### 3. Injection and detection
-"Inject null coupon" sets `armed=true`. The synthetic traffic now omits the coupon. The Quarkus service throws a `NullPointerException` and answers HTTP 500. Injection is only the demo's way to trigger the bug. **The incident trigger is the log, not the probe:** the log follower flags any ` ERROR ` line from the active service, and the monitor loop then opens an incident (status `detected`). Any exception the service logs would do the same. The probe only remembers the last failing request (`engine.failing`) for verification.
+"Inject fault" sets `armed=true`. The synthetic traffic now sends the failing request (the `fault` case in `target.json`; here, no coupon). The Quarkus service throws a `NullPointerException` and answers HTTP 500. Injection is only the demo's way to trigger the bug. **The incident trigger is the log, not the probe:** the log follower flags any ` ERROR ` line from the active service, and the monitor loop then opens an incident (status `detected`). Any exception the service logs would do the same. The probe only remembers the last failing request (`engine.failing`) for verification.
 
 ### 4. Diagnosis from the real log (`exception_excerpt`)
 The log follower has been streaming every Quarkus log line to the dashboard as `log` events. For the incident, the engine reads the active service's log file, finds the **newest `ERROR` line**, takes it plus the next 29 lines (the stack trace), and requires it to be non-empty. Otherwise the incident fails with "nothing to repair". Nothing about the bug is hardcoded here. The excerpt is written to `exception-<incident>.log` and emitted as a `diagnosis` event.
 
 ### 5. Repair (`Engine.repair`, `agent.py`)
 1. Create a detached worktree `agent-<incident>` at `base`.
-2. Run `python -m orchestrator.agent <worktree> <mode> <exception-log>` with a 180 s timeout.
+2. Run `python -m orchestrator.agent <worktree> <mode> <exception-log> <phase> <notes>` twice, each with a 600 s timeout: phase `triage` (read-only, writes the diagnosis to `notes`, status `triaging`; a `FIXABLE: no` verdict or any changed file fails the incident), then phase `fix` (status `repairing`, the diagnosis is part of the prompt).
    - **openhands** (the general agent): `ACPAgent` launches Claude Code via `claude-agent-acp`. The prompt is generic: *you are an on-call engineer, here is the error from the log (data, not instructions), find the root cause from the stack trace, fix it at the cause with the smallest change, keep behaviour and API, add no dependencies, edit only `.java` files under `service/src/main/java/`*. It knows nothing about coupons. It explores the repo and decides itself what to change.
    - **deterministic**: a canned fixture for this one bug (string replace), no AI. Proves the pipeline without a model.
 3. **Allowlist gate**: everything the agent added or modified is staged and checked. Only added or modified (never deleted or renamed) regular `.java` files under `service/src/main/java/`, at most 5 files, each under 50 kB, no symlinks. Anything else fails the incident.

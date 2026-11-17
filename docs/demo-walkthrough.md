@@ -1,5 +1,40 @@
 # Demo walkthrough
 
+## Session plan (25 minutes)
+
+| Time | Activity | Where |
+|---|---|---|
+| 0–4 min | Opening talk: what self-healing software is, and what this demo does and does not claim | Slides or talk, see "Opening talk" below |
+| 4–7 min | Show the healthy dashboard; readiness stays green while only the business probe catches faults; architecture and the human gate | Dashboard, steps 1 |
+| 7–10 min | **Inject fault**; watch the error in the service log open an incident | Steps 2–3 |
+| 10–14 min | Triage card (root cause, `FIXABLE`), then the agent's fix, allowlist and separate verification | Steps 4–5 |
+| 14–19 min | Pull request, CI, review and merge as the approval; deploy and live check | Steps 6–8 |
+| 19–23 min | Reset; discuss rejection, rollback, trust boundaries and how this maps to production (Sentry + Seer, your own CI/CD) | Step 9, "Points worth stressing" |
+| 23–25 min | Questions. If model latency threatens timing, switch to the replay fallback | `AGENT_MODE=replay` |
+
+Preflight: run the deterministic smoke test once to warm dependencies, run one real `openhands` cycle if you present AI, reset, and keep a second terminal ready for `AGENT_MODE=replay`. Model output and latency cannot be guaranteed.
+
+## Opening talk: self-healing software (3–4 minutes)
+
+Say it in this order.
+
+1. **The idea.** Self-healing software notices that it is broken, works out why, fixes itself and confirms the fix, with little or no human work in between.
+2. **Two levels.**
+   - *Infrastructure healing* is old and common: restart a crashed process, reschedule a pod, roll back a bad release, scale out. It treats the symptom and needs no understanding of the code.
+   - *Code-level healing* is new: the bug is in the source, so the system must read the error, find the cause, change the code and ship it. Coding agents make this possible now.
+3. **The loop.** Detect, triage, fix, verify, approve, deploy, observe. Every tool in this space, from Sentry with its AI debugger (Seer) to home-built pipelines, is a variation of this loop. The demo shows each stage.
+4. **Why a green health check is not enough.** A readiness endpoint says the process is up. It cannot see a business failure such as checkout crashing when the optional coupon is missing. Detection has to look at errors and real behaviour.
+5. **Where the risk is.** The hard part is not generating a fix, it is trusting it:
+   - the agent can be wrong or be steered by hostile text in logs (prompt injection)
+   - a fix is only as safe as the tests that check it
+   - an unreviewed deploy is a new way to break production
+6. **The design answer, which is what you will show.** The agent is treated as untrusted. It works in an isolated checkout, may only change allowlisted files, and is judged by tests it did not write, in a separate checkout. A human reviews and merges a normal pull request, and CI re-checks it. The merge is the approval, and a failed deploy rolls back.
+7. **What is real in the demo.** A real Quarkus service, real errors, a real coding agent in `openhands` mode, real branch, PR and CI. The deploy step is a local traffic switch. In production your own CD pipeline, canary and rollback do that job, and an observability tool such as Sentry does the detection.
+8. **What it does not claim.** It is one planted bug, not general reliability. The deterministic and replay modes are labelled, they are not AI runs and say nothing about model quality.
+
+Then say what the audience will watch for: a fault, an incident, a diagnosis, a patch, a pull request, a merge and a recovery.
+
+
 ## Prerequisites
 
 - Java 27 (`java -version` shows 27), Maven, Python 3.12 with `uv`, Node (`npx`), `gh` CLI logged in (`gh auth status`).
@@ -38,7 +73,7 @@ The optional `fixture` plants the bug into the baseline and feeds the determinis
 | Step | You do | What the audience sees | What to explain |
 |---|---|---|---|
 | 1 | Point at the dashboard | Status healthy, probe PASS, Quarkus log scrolling with `POST /checkout ... 200` | Real Quarkus service, real access log. Health endpoint is green and would stay green. |
-| 2 | Click **Inject null coupon** | Probes turn FAIL; log shows `ERROR ... NullPointerException ... CheckoutResource.java` | Optional field dereferenced without a null check. Readiness checks cannot see this class of bug, only the business probe does. |
+| 2 | Click **Inject fault** | Probes turn FAIL; log shows `ERROR ... NullPointerException ... CheckoutResource.java` | Optional field dereferenced without a null check. Readiness checks cannot see this class of bug, only the business probe does. |
 | 3 | Wait | "ERROR in the Quarkus log; incident opened", then a `diagnosis` event | The trigger is the log, not the probe. The engine extracts the stack trace. That excerpt is the agent's only description of the problem; the agent has no knowledge of coupons. |
 | 4 | Wait | Status triaging: the "Triage: root cause" card fills in, then status repairing | Two agent phases in an isolated Git worktree. Triage is read-only: it names the root cause and says `FIXABLE: yes/no` before any code changes. If no, the incident stops there. The agent prompt names no language or framework. |
 | 5 | Wait | Status verifying, then the patch appears in "Proposed source change" | Allowlist check, then a **separate** clean checkout with trusted tests and an HTTP contract. The agent's tree is never executed. |

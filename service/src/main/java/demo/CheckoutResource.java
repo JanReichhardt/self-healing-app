@@ -17,7 +17,7 @@ public class CheckoutResource {
         }
 
         // Deliberate incident: optional coupon is dereferenced without a null check.
-        String coupon = order.coupon().trim();
+        String coupon = order.coupon() == null ? "" : order.coupon().trim();
         long total = "SAVE10".equalsIgnoreCase(coupon)
             ? order.subtotalCents() * 90 / 100 : order.subtotalCents();
 

@@ -16,8 +16,8 @@ public class CheckoutResource {
             throw new BadRequestException("subtotalCents must be between 0 and 1000000");
         }
 
-        // Deliberate incident: optional coupon is dereferenced without a null check.
-        String coupon = order.coupon().trim();
+        // Coupon is optional: a missing coupon means no discount.
+        String coupon = order.coupon() == null ? "" : order.coupon().trim();
         long total = "SAVE10".equalsIgnoreCase(coupon)
             ? order.subtotalCents() * 90 / 100 : order.subtotalCents();
 
